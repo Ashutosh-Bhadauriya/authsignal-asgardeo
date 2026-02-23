@@ -1,4 +1,4 @@
-# Asgardeo x Authsignal Adapter
+# Asgardeo x Authsignal adapter
 
 Production-ready adapter service that implements Asgardeo Custom Authentication and delegates challenge orchestration to Authsignal.
 
@@ -11,18 +11,6 @@ Production-ready adapter service that implements Asgardeo Custom Authentication 
 5. Adapter validates challenge result with Authsignal Validate API.
 6. Adapter stores final outcome and redirects user to Asgardeo resume URL.
 7. Asgardeo calls `POST /api/authenticate` again, adapter returns final `SUCCESS` or `FAILED`.
-
-## Features
-
-- Hardened Express service (`helmet`, structured logging, size-limited JSON)
-- Config-driven inbound auth for Asgardeo requests (`none`, `basic`, `bearer`, `api-key`)
-- Adapter-side retry + timeout logic for Authsignal API calls
-- Flow state persistence with TTL
-- Redis store for production (multi-instance safe persistence), memory store for local testing
-- Idempotent flow behavior for retries and re-entries
-- Health endpoints: `GET /healthz`, `GET /readyz`
-- Dockerized deployment
-- Integration tests with Vitest + Supertest
 
 ## Requirements
 
