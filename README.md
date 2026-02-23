@@ -56,13 +56,6 @@ npm run dev
 npm run check
 ```
 
-## Production run (Docker)
-
-```bash
-docker build -t asgardeo-authsignal-adapter .
-docker run --rm -p 3000:3000 --env-file .env asgardeo-authsignal-adapter
-```
-
 ## Asgardeo setup checklist
 
 1. Register adapter endpoint `POST /api/authenticate` as custom authenticator service.
@@ -70,12 +63,3 @@ docker run --rm -p 3000:3000 --env-file .env asgardeo-authsignal-adapter
 3. Add authenticator as a 2FA step in login flow.
 4. Ensure callback URL `${PUBLIC_BASE_URL}${CALLBACK_PATH}` is allowed in Authsignal.
 5. Configure `ASGARDEO_RESUME_URL_TEMPLATE` with your Asgardeo tenant resume endpoint.
-
-## API behavior
-
-`POST /api/authenticate` response contract:
-
-- `{"actionStatus":"SUCCESS"}`
-- `{"actionStatus":"FAILED","failureReason":"..."}`
-- `{"actionStatus":"INCOMPLETE","authData":{"additionalData":{"redirectUrl":"..."}}}`
-- `{"actionStatus":"ERROR","failureReason":"..."}`
