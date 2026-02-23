@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Asgardeo Login Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 80px auto; text-align: center; }
+    button { padding: 12px 32px; font-size: 16px; cursor: pointer; background: #ff7300; color: white; border: none; border-radius: 6px; }
+    button:hover { background: #e66600; }
+    pre { text-align: left; background: #f4f4f4; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; }
+    .status { margin-top: 24px; padding: 16px; border-radius: 6px; }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h1>Asgardeo + Authsignal Test</h1>
+  <div id="app">
+    <button onclick="login()">Login with Asgardeo</button>
+  </div>
+  <div id="result"></div>
+
+  <script>
+    const CONFIG = {
+      clientId: "PzDKUnqeJeZgvL9booUtKitnHa8a",
+      baseUrl: "https://api.asgardeo.io/t/ashutest",
+      redirectUri: "http://localhost:3001",
+      scope: "openid profile"
+    };
+
+    // PKCE helpers
+    function generateRandomString(length) {
+      const array = new Uint8Array(length);
+      crypto.getRandomValues(array);
+      return Array.from(array, b => b.toString(16).padStart(2, "0")).join("").slice(0, length);
+    }
+
+    async function generateCodeChallenge(verifier) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(verifier);
+      const digest = await crypto.subtle.digest("SHA-256", data);
+      return btoa(String.fromCharCode(...new Uint8Array(digest)))
+        .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+
+    async function login() {
+      const codeVerifier = generateRandomString(64);
+      const codeChallenge = await generateCodeChallenge(codeVerifier);
+      const state = generateRandomString(32);
+
+      sessionStorage.setItem("pkce_verifier", codeVerifier);
+      sessionStorage.setItem("oauth_state", state);
+
+      const params = new URLSearchParams({
+        response_type: "code",
+        client_id: CONFIG.clientId,
+        redirect_uri: CONFIG.redirectUri,
+        scope: CONFIG.scope,
+        code_challenge: codeChallenge,
+        code_challenge_method: "S256",
+        state: state
+      });
+
+      window.location.href = `${CONFIG.baseUrl}/oauth2/authorize?${params}`;
+    }
+
+    // Handle callback
+    async function handleCallback() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const state = params.get("state");
+      const error = params.get("error");
+
+      if (error) {
+        document.getElementById("result").innerHTML =
+          `<div class="status error"><strong>Login failed:</strong> ${error} - ${params.get("error_description") || ""}</div>`;
+        return;
+      }
+
+      if (!code) return;
+
+      const savedState = sessionStorage.getItem("oauth_state");
+      if (state !== savedState) {
+        document.getElementById("result").innerHTML =
+          `<div class="status error"><strong>State mismatch!</strong> Possible CSRF attack.</div>`;
+        return;
+      }
+
+      const codeVerifier = sessionStorage.getItem("pkce_verifier");
+
+      try {
+        const tokenResponse = await fetch(`${CONFIG.baseUrl}/oauth2/token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "authorization_code",
+            code: code,
+            redirect_uri: CONFIG.redirectUri,
+            client_id: CONFIG.clientId,
+            code_verifier: codeVerifier
+          })
+        });
+
+        const tokens = await tokenResponse.json();
+
+        if (tokens.error) {
+          document.getElementById("result").innerHTML =
+            `<div class="status error"><strong>Token error:</strong><pre>${JSON.stringify(tokens, null, 2)}</pre></div>`;
+          return;
+        }
+
+        // Decode the ID token to show user info
+        const idTokenPayload = JSON.parse(atob(tokens.id_token.split(".")[1]));
+
+        document.getElementById("app").innerHTML = `<button onclick="window.location.href='http://localhost:3001'" style="background:#28a745">Login Successful! Click to reset</button>`;
+        document.getElementById("result").innerHTML =
+          `<div class="status success">
+            <strong>Login successful!</strong>
+            <p>The full Asgardeo + Authsignal flow completed.</p>
+            <h3>User Info (from ID token):</h3>
+            <pre>${JSON.stringify(idTokenPayload, null, 2)}</pre>
+            <h3>Tokens:</h3>
+            <pre>${JSON.stringify({ access_token: tokens.access_token?.slice(0, 20) + "...", id_token: "decoded above", token_type: tokens.token_type, expires_in: tokens.expires_in }, null, 2)}</pre>
+          </div>`;
+      } catch (err) {
+        document.getElementById("result").innerHTML =
+          `<div class="status error"><strong>Error exchanging code:</strong> ${err.message}</div>`;
+      }
+
+      // Clean up
+      sessionStorage.removeItem("pkce_verifier");
+      sessionStorage.removeItem("oauth_state");
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Check if this is a callback
+    if (window.location.search.includes("code=") || window.location.search.includes("error=")) {
+      handleCallback();
+    }
+  </script>
+</body>
+</html>
