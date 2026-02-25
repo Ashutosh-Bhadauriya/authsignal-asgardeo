@@ -1,4 +1,4 @@
-import express, { type Request } from "express";
+import express from "express";
 import helmet from "helmet";
 import type { Logger } from "pino";
 
@@ -7,7 +7,7 @@ import { createAsgardeoRequestAuth } from "./auth/asgardeo-request-auth.js";
 import type { AuthsignalClient } from "./auth/authsignal-client.js";
 import type { CompletedFlowRecord, FlowStore, PendingFlowRecord } from "./store/flow-store.js";
 import { asgardeoAuthRequestSchema, type AsgardeoAuthRequest, type AsgardeoAuthResponse } from "./types/asgardeo.js";
-import { buildCallbackUrl, buildResumeUrl, extractTenantHint, getClientIp, renderSimplePage, resolveUserId } from "./utils.js";
+import { buildResumeUrl, extractTenantHint, getClientIp, resolveUserId } from "./utils.js";
 
 const LOCK_TTL_MS = 30_000;
 const SUCCESS_STATES = new Set(["ALLOW", "CHALLENGE_SUCCEEDED", "REVIEW_SUCCEEDED"]);
@@ -68,26 +68,59 @@ function mapTrackState(
   return { kind: "unknown" };
 }
 
-function mapValidateState(
-  state?: string,
-  isValid?: boolean
-): { outcome: "SUCCESS" | "FAILED"; reason?: string } {
-  const normalized = state?.toUpperCase();
-
-  if (isValid === true || (normalized && SUCCESS_STATES.has(normalized))) {
-    return { outcome: "SUCCESS" };
-  }
-
-  if (normalized && FAILED_STATES.has(normalized)) {
-    return { outcome: "FAILED", reason: `authsignal_${normalized.toLowerCase()}` };
-  }
-
-  return { outcome: "FAILED", reason: "authsignal_validation_failed" };
+function toCompletedFlow(
+  flow: PendingFlowRecord,
+  outcome: "SUCCESS" | "FAILED",
+  updatedAt: string,
+  failureReason?: string
+): CompletedFlowRecord {
+  return {
+    flowId: flow.flowId,
+    userId: flow.userId,
+    resumeUrl: flow.resumeUrl,
+    status: "COMPLETED",
+    outcome,
+    createdAt: flow.createdAt,
+    updatedAt,
+    ...(flow.tenantHint ? { tenantHint: flow.tenantHint } : {}),
+    ...(failureReason ? { failureReason } : {})
+  };
 }
 
 export function createApp({ config, logger, store, authsignal }: AppDependencies): express.Express {
   const app = express();
   const authenticateAuthMiddleware = createAsgardeoRequestAuth(config);
+
+  async function resolvePendingFlow(
+    flow: PendingFlowRecord,
+    asgardeoRequest: AsgardeoAuthRequest
+  ): Promise<AsgardeoAuthResponse> {
+    try {
+      const actionResult = await authsignal.getAction(flow.userId, flow.action, flow.idempotencyKey);
+      const actionState = actionResult.state.toUpperCase();
+
+      if (SUCCESS_STATES.has(actionState)) {
+        await store.save(toCompletedFlow(flow, "SUCCESS", new Date().toISOString()));
+        return asgardeoSuccess();
+      }
+
+      if (FAILED_STATES.has(actionState)) {
+        const reason = `authsignal_${actionState.toLowerCase()}`;
+        await store.save(toCompletedFlow(flow, "FAILED", new Date().toISOString(), reason));
+        return asgardeoFailure(reason, "Authentication challenge failed");
+      }
+    } catch (error) {
+      logger.error({ err: error, flowId: flow.flowId }, "Failed to check action state via getAction");
+    }
+
+    // Still pending or getAction failed — bump updatedAt so TTL doesn't expire mid-challenge
+    await store.save({ ...flow, updatedAt: new Date().toISOString() });
+
+    if (!canRedirect(asgardeoRequest)) {
+      return asgardeoError("REDIRECT_NOT_ALLOWED", "Redirect operation not allowed");
+    }
+    return asgardeoIncomplete(flow.redirectUrl);
+  }
 
   app.disable("x-powered-by");
   if (config.trustProxy) {
@@ -143,11 +176,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
       const existingFlow = await store.get(flowId);
       if (existingFlow) {
         if (existingFlow.status === "PENDING") {
-          if (!canRedirect(asgardeoRequest)) {
-            response.status(200).json(asgardeoError("REDIRECT_NOT_ALLOWED", "Redirect operation not allowed"));
-            return;
-          }
-          response.status(200).json(asgardeoIncomplete(existingFlow.redirectUrl));
+          response.status(200).json(await resolvePendingFlow(existingFlow, asgardeoRequest));
           return;
         }
 
@@ -166,11 +195,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
         const lockRaceFlow = await store.get(flowId);
         if (lockRaceFlow) {
           if (lockRaceFlow.status === "PENDING") {
-            if (!canRedirect(asgardeoRequest)) {
-              response.status(200).json(asgardeoError("REDIRECT_NOT_ALLOWED", "Redirect operation not allowed"));
-              return;
-            }
-            response.status(200).json(asgardeoIncomplete(lockRaceFlow.redirectUrl));
+            response.status(200).json(await resolvePendingFlow(lockRaceFlow, asgardeoRequest));
           } else {
             response
               .status(200)
@@ -191,11 +216,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
         const doubleCheckFlow = await store.get(flowId);
         if (doubleCheckFlow) {
           if (doubleCheckFlow.status === "PENDING") {
-            if (!canRedirect(asgardeoRequest)) {
-              response.status(200).json(asgardeoError("REDIRECT_NOT_ALLOWED", "Redirect operation not allowed"));
-              return;
-            }
-            response.status(200).json(asgardeoIncomplete(doubleCheckFlow.redirectUrl));
+            response.status(200).json(await resolvePendingFlow(doubleCheckFlow, asgardeoRequest));
             return;
           }
           response
@@ -216,7 +237,6 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
 
         const tenantHint = extractTenantHint(asgardeoRequest);
         const resumeUrl = buildResumeUrl(config.asgardeo.resumeUrlTemplate, flowId, tenantHint);
-        const callbackUrl = buildCallbackUrl(config.publicBaseUrl, config.callbackPath, flowId);
 
         const ipAddress = getClientIp(request);
         const userAgent = request.header("user-agent");
@@ -232,7 +252,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
         const trackResult = await authsignal.trackAction({
           userId,
           action,
-          redirectUrl: callbackUrl,
+          redirectUrl: resumeUrl,
           ...(ipAddress ? { ipAddress } : {}),
           ...(userAgent ? { userAgent } : {}),
           custom: customPayload
@@ -240,6 +260,12 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
 
         const mappedTrackState = mapTrackState(trackResult.state, trackResult);
         if (mappedTrackState.kind === "pending") {
+          if (!trackResult.idempotencyKey) {
+            logger.error({ flowId, trackResult }, "trackAction returned CHALLENGE_REQUIRED without idempotencyKey");
+            response.status(200).json(asgardeoError("AUTHSIGNAL_ERROR", "Missing idempotency key from Authsignal"));
+            return;
+          }
+
           if (!canRedirect(asgardeoRequest)) {
             response.status(200).json(asgardeoError("REDIRECT_NOT_ALLOWED", "Redirect operation not allowed"));
             return;
@@ -252,6 +278,8 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
             resumeUrl,
             status: "PENDING",
             redirectUrl: mappedTrackState.redirectUrl,
+            idempotencyKey: trackResult.idempotencyKey,
+            action,
             createdAt: now,
             updatedAt: now,
             ...(tenantHint ? { tenantHint } : {})
@@ -297,112 +325,9 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
     }
   });
 
-  app.get("/api/callback", async (request, response) => {
-    let flowForFailure: PendingFlowRecord | undefined;
-    let flowIdForLog: string | undefined;
-
-    try {
-      const flowId = getSingleQueryValue(request, "flowId");
-      flowIdForLog = flowId;
-      if (!flowId) {
-        response
-          .status(400)
-          .type("html")
-          .send(renderSimplePage("Missing flow ID", "The callback is missing flowId and cannot continue."));
-        return;
-      }
-
-      const flow = await store.get(flowId);
-      if (!flow) {
-        response
-          .status(404)
-          .type("html")
-          .send(renderSimplePage("Flow not found", "This authentication flow is expired or no longer available."));
-        return;
-      }
-
-      if (flow.status === "COMPLETED") {
-        response.redirect(302, flow.resumeUrl);
-        return;
-      }
-
-      flowForFailure = flow;
-
-      const token = getSingleQueryValue(request, "token");
-      if (!token) {
-        const completedAt = new Date().toISOString();
-        await store.save(toCompletedFlow(flow, "FAILED", completedAt, "callback_token_missing"));
-        response.redirect(302, flow.resumeUrl);
-        return;
-      }
-
-      const validationResult = await authsignal.validateChallenge(token);
-      const mapped = mapValidateState(validationResult.state, validationResult.isValid);
-
-      await store.save(toCompletedFlow(flow, mapped.outcome, new Date().toISOString(), mapped.reason));
-
-      response.redirect(302, flow.resumeUrl);
-    } catch (error) {
-      logger.error({ err: error, flowId: flowIdForLog }, "Failed to handle Authsignal callback");
-
-      if (flowForFailure) {
-        try {
-          await store.save(
-            toCompletedFlow(flowForFailure, "FAILED", new Date().toISOString(), "authsignal_validate_error")
-          );
-          if (!response.headersSent) {
-            response.redirect(302, flowForFailure.resumeUrl);
-            return;
-          }
-        } catch (saveError) {
-          logger.error({ err: saveError, flowId: flowIdForLog }, "Failed to persist callback failure status");
-        }
-      }
-
-      if (!response.headersSent) {
-        response
-          .status(500)
-          .type("html")
-          .send(renderSimplePage("Authentication error", "Could not complete callback processing."));
-      }
-    }
-  });
-
   app.use((_request, response) => {
     response.status(404).json({ error: "not_found" });
   });
 
   return app;
-}
-
-function getSingleQueryValue(request: Request, key: string): string | undefined {
-  const value = request.query[key];
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed === "" ? undefined : trimmed;
-  }
-  if (Array.isArray(value) && typeof value[0] === "string") {
-    const trimmed = value[0].trim();
-    return trimmed === "" ? undefined : trimmed;
-  }
-  return undefined;
-}
-
-function toCompletedFlow(
-  flow: PendingFlowRecord,
-  outcome: "SUCCESS" | "FAILED",
-  updatedAt: string,
-  failureReason?: string
-): CompletedFlowRecord {
-  return {
-    flowId: flow.flowId,
-    userId: flow.userId,
-    resumeUrl: flow.resumeUrl,
-    status: "COMPLETED",
-    outcome,
-    createdAt: flow.createdAt,
-    updatedAt,
-    ...(flow.tenantHint ? { tenantHint: flow.tenantHint } : {}),
-    ...(failureReason ? { failureReason } : {})
-  };
 }

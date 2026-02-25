@@ -6,11 +6,10 @@ Production-ready adapter service that implements Asgardeo Custom Authentication 
 
 1. Asgardeo calls `POST /api/authenticate` with a `flowId` and user context.
 2. Adapter calls Authsignal Track Action.
-3. If challenge is required, adapter returns `INCOMPLETE` with redirect URL.
-4. User completes Authsignal challenge and returns to `GET /api/callback`.
-5. Adapter validates challenge result with Authsignal Validate API.
-6. Adapter stores final outcome and redirects user to Asgardeo resume URL.
-7. Asgardeo calls `POST /api/authenticate` again, adapter returns final `SUCCESS` or `FAILED`.
+3. If challenge is required, adapter returns `INCOMPLETE` with Authsignal redirect URL.
+4. User completes Authsignal challenge and is redirected to Asgardeo resume URL.
+5. Asgardeo calls `POST /api/authenticate` again, adapter checks challenge result via Authsignal Get Action API.
+6. Adapter returns final `SUCCESS` or `FAILED`.
 
 ## Requirements
 
@@ -21,8 +20,6 @@ Production-ready adapter service that implements Asgardeo Custom Authentication 
 
 Use `.env.example` as template.
 
-- `PUBLIC_BASE_URL`: Public URL of this adapter service.
-- `CALLBACK_PATH`: Callback path for Authsignal redirect (default `/api/callback`).
 - `ASGARDEO_RESUME_URL_TEMPLATE`: Asgardeo resume URL template, must include `{flowId}`.
 - `ASGARDEO_AUTH_MODE`: `none` | `basic` | `bearer` | `api-key`.
 - `AUTHSIGNAL_API_URL`: Authsignal Server API base URL (`https://api.authsignal.com` or region equivalent).
@@ -61,5 +58,5 @@ npm run check
 1. Register adapter endpoint `POST /api/authenticate` as custom authenticator service.
 2. Configure request authentication (Basic/Bearer/API Key) and match env settings.
 3. Add authenticator as a 2FA step in login flow.
-4. Ensure callback URL `${PUBLIC_BASE_URL}${CALLBACK_PATH}` is allowed in Authsignal.
-5. Configure `ASGARDEO_RESUME_URL_TEMPLATE` with your Asgardeo tenant resume endpoint.
+4. Configure `ASGARDEO_RESUME_URL_TEMPLATE` with your Asgardeo tenant resume endpoint.
+5. Set the Asgardeo resume URL as the redirect URL in your Authsignal action configuration.

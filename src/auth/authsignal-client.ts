@@ -1,7 +1,7 @@
 import type { Logger } from "pino";
 
 import type { AppConfig } from "../config.js";
-import type { AuthsignalTrackResult, AuthsignalValidateResult } from "../types/authsignal.js";
+import type { AuthsignalTrackResult, AuthsignalGetActionResult } from "../types/authsignal.js";
 import { sleep } from "../utils.js";
 
 const TIMEOUT_MS = 5000;
@@ -18,7 +18,7 @@ interface TrackActionInput {
 
 export interface AuthsignalClient {
   trackAction(input: TrackActionInput): Promise<AuthsignalTrackResult>;
-  validateChallenge(token: string): Promise<AuthsignalValidateResult>;
+  getAction(userId: string, action: string, idempotencyKey: string): Promise<AuthsignalGetActionResult>;
 }
 
 export class HttpAuthsignalClient implements AuthsignalClient {
@@ -44,29 +44,43 @@ export class HttpAuthsignalClient implements AuthsignalClient {
       custom: input.custom
     };
 
-    return this.request<AuthsignalTrackResult>(
+    return this.post<AuthsignalTrackResult>(
       `/v1/users/${encodeURIComponent(input.userId)}/actions/${encodeURIComponent(input.action)}`,
       requestBody
     );
   }
 
-  async validateChallenge(token: string): Promise<AuthsignalValidateResult> {
-    return this.request<AuthsignalValidateResult>("/v1/validate", { token });
+  async getAction(userId: string, action: string, idempotencyKey: string): Promise<AuthsignalGetActionResult> {
+    return this.get<AuthsignalGetActionResult>(
+      `/v1/users/${encodeURIComponent(userId)}/actions/${encodeURIComponent(action)}/${encodeURIComponent(idempotencyKey)}`
+    );
   }
 
-  private async request<T>(path: string, body: unknown): Promise<T> {
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  }
+
+  private async get<T>(path: string): Promise<T> {
+    return this.request<T>(path, { method: "GET" });
+  }
+
+  private async request<T>(path: string, init: { method: string; headers?: Record<string, string>; body?: string }): Promise<T> {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
       try {
         const response = await fetch(`${this.baseUrl}${path}`, {
-          method: "POST",
+          method: init.method,
           headers: {
-            "content-type": "application/json",
+            ...init.headers,
             authorization: this.serverApiAuthorizationHeader
           },
-          body: JSON.stringify(body),
+          ...(init.body != null ? { body: init.body } : {}),
           signal: controller.signal
         });
 

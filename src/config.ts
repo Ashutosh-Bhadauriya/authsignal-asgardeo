@@ -50,8 +50,6 @@ const envSchema = z
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),
-    PUBLIC_BASE_URL: z.string().url(),
-    CALLBACK_PATH: z.string().min(1).default("/api/callback"),
     TRUST_PROXY: booleanWithDefault(true),
     ASGARDEO_RESUME_URL_TEMPLATE: z.string().min(1),
     ASGARDEO_AUTH_MODE: z.enum(["none", "basic", "bearer", "api-key"]).default("none"),
@@ -112,8 +110,6 @@ export interface AppConfig {
   nodeEnv: "development" | "test" | "production";
   port: number;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
-  publicBaseUrl: string;
-  callbackPath: string;
   trustProxy: boolean;
   asgardeo: {
     resumeUrlTemplate: string;
@@ -136,9 +132,6 @@ export interface AppConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.parse(env);
-  const callbackPath = parsed.CALLBACK_PATH.startsWith("/")
-    ? parsed.CALLBACK_PATH
-    : `/${parsed.CALLBACK_PATH}`;
 
   let asgardeoAuth: AppConfig["asgardeo"]["auth"];
   switch (parsed.ASGARDEO_AUTH_MODE) {
@@ -170,8 +163,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
     logLevel: parsed.LOG_LEVEL,
-    publicBaseUrl: parsed.PUBLIC_BASE_URL,
-    callbackPath,
     trustProxy: parsed.TRUST_PROXY,
     asgardeo: {
       resumeUrlTemplate: parsed.ASGARDEO_RESUME_URL_TEMPLATE,

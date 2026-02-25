@@ -12,6 +12,8 @@ interface BaseFlowRecord {
 export interface PendingFlowRecord extends BaseFlowRecord {
   status: "PENDING";
   redirectUrl: string;
+  idempotencyKey: string;
+  action: string;
 }
 
 export interface CompletedFlowRecord extends BaseFlowRecord {

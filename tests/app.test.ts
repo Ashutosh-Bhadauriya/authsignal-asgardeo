@@ -12,8 +12,6 @@ function baseConfig(): AppConfig {
     nodeEnv: "test",
     port: 3000,
     logLevel: "silent",
-    publicBaseUrl: "https://adapter.example.com",
-    callbackPath: "/api/callback",
     trustProxy: true,
     asgardeo: {
       resumeUrlTemplate: "https://asgardeo.example.com/logincontext?flowId={flowId}",
@@ -21,10 +19,7 @@ function baseConfig(): AppConfig {
     },
     authsignal: {
       apiUrl: "https://signal.authsignal.com",
-      secret: "secret",
-      action: "login",
-      timeoutMs: 1000,
-      maxRetries: 0
+      secret: "secret"
     },
     store: {
       driver: "memory",
@@ -36,23 +31,29 @@ function baseConfig(): AppConfig {
 function createAuthsignalClientMock(overrides?: Partial<AuthsignalClient>): AuthsignalClient {
   return {
     trackAction: vi.fn(async () => ({ state: "ALLOW" })),
-    validateChallenge: vi.fn(async () => ({ state: "CHALLENGE_SUCCEEDED", isValid: true })),
+    getAction: vi.fn(async () => ({ state: "CHALLENGE_SUCCEEDED" })),
     ...overrides
   };
 }
 
 describe("Asgardeo/Authsignal adapter", () => {
-  it("handles challenge-required flow and returns success after callback validation", async () => {
+  it("handles challenge-required flow and returns success after re-entry", async () => {
     const trackAction = vi.fn(async () => ({
       state: "CHALLENGE_REQUIRED",
+      idempotencyKey: "action-id-123",
       url: "https://challenge.example.com/session/123"
     }));
-    const validateChallenge = vi.fn(async () => ({
-      state: "CHALLENGE_SUCCEEDED",
-      isValid: true
-    }));
 
-    const authsignal = createAuthsignalClientMock({ trackAction, validateChallenge });
+    let getActionCallCount = 0;
+    const getAction = vi.fn(async () => {
+      getActionCallCount++;
+      if (getActionCallCount === 1) {
+        return { state: "CHALLENGE_REQUIRED" };
+      }
+      return { state: "CHALLENGE_SUCCEEDED" };
+    });
+
+    const authsignal = createAuthsignalClientMock({ trackAction, getAction });
     const app = createApp({
       config: baseConfig(),
       logger: pino({ enabled: false }),
@@ -62,14 +63,10 @@ describe("Asgardeo/Authsignal adapter", () => {
 
     const authenticateRequest = {
       flowId: "flow-123",
-      event: {
-        user: {
-          id: "user-1"
-        }
-      }
+      event: { user: { id: "user-1" } }
     };
 
-    // First call: Authsignal returns CHALLENGE_REQUIRED → adapter returns INCOMPLETE with redirect
+    // First call: trackAction → CHALLENGE_REQUIRED → INCOMPLETE
     const firstAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
     expect(firstAttempt.status).toBe(200);
     expect(firstAttempt.body).toEqual({
@@ -77,25 +74,19 @@ describe("Asgardeo/Authsignal adapter", () => {
       operations: [{ op: "redirect", url: "https://challenge.example.com/session/123" }]
     });
 
-    // Second call (same flowId): should return cached INCOMPLETE, no new trackAction
+    // Second call: getAction → still CHALLENGE_REQUIRED → INCOMPLETE again
     const secondAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
     expect(secondAttempt.status).toBe(200);
     expect(secondAttempt.body.actionStatus).toBe("INCOMPLETE");
     expect(trackAction).toHaveBeenCalledTimes(1);
+    expect(getAction).toHaveBeenCalledTimes(1);
 
-    // Callback from Authsignal: validates token and redirects to Asgardeo resume URL
-    const callback = await request(app)
-      .get("/api/callback")
-      .query({ flowId: "flow-123", token: "authsignal-token" });
-
-    expect(callback.status).toBe(302);
-    expect(callback.headers.location).toBe("https://asgardeo.example.com/logincontext?flowId=flow-123");
-    expect(validateChallenge).toHaveBeenCalledWith("authsignal-token");
-
-    // Final call from Asgardeo (after resume): returns SUCCESS
-    const finalAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
-    expect(finalAttempt.status).toBe(200);
-    expect(finalAttempt.body).toEqual({ actionStatus: "SUCCESS" });
+    // Third call: getAction → CHALLENGE_SUCCEEDED → SUCCESS
+    const thirdAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
+    expect(thirdAttempt.status).toBe(200);
+    expect(thirdAttempt.body).toEqual({ actionStatus: "SUCCESS" });
+    expect(getAction).toHaveBeenCalledTimes(2);
+    expect(getAction).toHaveBeenCalledWith("user-1", "login", "action-id-123");
   });
 
   it("returns FAILED when Authsignal blocks the action", async () => {
@@ -110,11 +101,7 @@ describe("Asgardeo/Authsignal adapter", () => {
 
     const response = await request(app).post("/api/authenticate").send({
       flowId: "flow-block",
-      event: {
-        user: {
-          id: "user-blocked"
-        }
-      }
+      event: { user: { id: "user-blocked" } }
     });
 
     expect(response.status).toBe(200);
@@ -153,61 +140,57 @@ describe("Asgardeo/Authsignal adapter", () => {
     expect(withToken.body).toEqual({ actionStatus: "SUCCESS" });
   });
 
-  it("redirects with failure when callback is missing token", async () => {
+  it("returns FAILED when getAction reports challenge failed on re-entry", async () => {
     const trackAction = vi.fn(async () => ({
       state: "CHALLENGE_REQUIRED",
-      url: "https://challenge.example.com/session/abc"
+      idempotencyKey: "action-id-456",
+      url: "https://challenge.example.com/session/456"
     }));
-    const validateChallenge = vi.fn(async () => ({
-      state: "CHALLENGE_SUCCEEDED",
-      isValid: true
-    }));
+    const getAction = vi.fn(async () => ({ state: "CHALLENGE_FAILED" }));
 
+    const authsignal = createAuthsignalClientMock({ trackAction, getAction });
     const app = createApp({
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal: createAuthsignalClientMock({ trackAction, validateChallenge })
+      authsignal
     });
 
-    const authenticateRequest = {
-      flowId: "flow-no-token",
-      event: {
-        user: {
-          id: "user-1"
-        }
-      }
-    };
+    const req = { flowId: "flow-fail", event: { user: { id: "user-fail" } } };
 
-    await request(app).post("/api/authenticate").send(authenticateRequest);
-    const callback = await request(app).get("/api/callback").query({ flowId: "flow-no-token" });
-    expect(callback.status).toBe(302);
+    await request(app).post("/api/authenticate").send(req);
 
-    const finalAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
-    expect(finalAttempt.status).toBe(200);
-    expect(finalAttempt.body).toEqual({
+    const reentry = await request(app).post("/api/authenticate").send(req);
+    expect(reentry.status).toBe(200);
+    expect(reentry.body).toEqual({
       actionStatus: "FAILED",
-      failureReason: "callback_token_missing",
+      failureReason: "authsignal_challenge_failed",
       failureDescription: "Authentication challenge failed"
     });
-
-    expect(validateChallenge).not.toHaveBeenCalled();
   });
 
-  it("returns HTML 404 for expired or unknown flow callback", async () => {
+  it("returns INCOMPLETE when getAction call fails on re-entry", async () => {
+    const trackAction = vi.fn(async () => ({
+      state: "CHALLENGE_REQUIRED",
+      idempotencyKey: "action-id-789",
+      url: "https://challenge.example.com/session/789"
+    }));
+    const getAction = vi.fn(async () => { throw new Error("API timeout"); });
+
+    const authsignal = createAuthsignalClientMock({ trackAction, getAction });
     const app = createApp({
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal: createAuthsignalClientMock()
+      authsignal
     });
 
-    const response = await request(app).get("/api/callback").query({
-      flowId: "flow-does-not-exist",
-      token: "token"
-    });
+    const req = { flowId: "flow-err", event: { user: { id: "user-err" } } };
 
-    expect(response.status).toBe(404);
-    expect(response.text).toContain("Flow not found");
+    await request(app).post("/api/authenticate").send(req);
+
+    const reentry = await request(app).post("/api/authenticate").send(req);
+    expect(reentry.status).toBe(200);
+    expect(reentry.body.actionStatus).toBe("INCOMPLETE");
   });
 });
