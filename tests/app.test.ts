@@ -7,6 +7,10 @@ import type { AuthsignalClient } from "../src/auth/authsignal-client.js";
 import type { AppConfig } from "../src/config.js";
 import { MemoryFlowStore } from "../src/store/memory-flow-store.js";
 
+const TEST_PASSWORD = "test-password";
+const TEST_AUTHSIGNAL_SECRET = "my-authsignal-secret";
+const BASIC_AUTH_HEADER = "Basic " + Buffer.from(`${TEST_AUTHSIGNAL_SECRET}:${TEST_PASSWORD}`).toString("base64");
+
 function baseConfig(): AppConfig {
   return {
     nodeEnv: "test",
@@ -15,11 +19,10 @@ function baseConfig(): AppConfig {
     trustProxy: true,
     asgardeo: {
       resumeUrlTemplate: "https://asgardeo.example.com/logincontext?flowId={flowId}",
-      auth: { mode: "none" }
+      auth: { mode: "basic", password: TEST_PASSWORD }
     },
     authsignal: {
-      apiUrl: "https://signal.authsignal.com",
-      secret: "secret"
+      apiUrl: "https://signal.authsignal.com"
     },
     store: {
       driver: "memory",
@@ -58,7 +61,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal
+      resolveAuthsignalClient: () => authsignal
     });
 
     const authenticateRequest = {
@@ -67,7 +70,10 @@ describe("Asgardeo/Authsignal adapter", () => {
     };
 
     // First call: trackAction → CHALLENGE_REQUIRED → INCOMPLETE
-    const firstAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
+    const firstAttempt = await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send(authenticateRequest);
     expect(firstAttempt.status).toBe(200);
     expect(firstAttempt.body).toEqual({
       actionStatus: "INCOMPLETE",
@@ -75,14 +81,20 @@ describe("Asgardeo/Authsignal adapter", () => {
     });
 
     // Second call: getAction → still CHALLENGE_REQUIRED → INCOMPLETE again
-    const secondAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
+    const secondAttempt = await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send(authenticateRequest);
     expect(secondAttempt.status).toBe(200);
     expect(secondAttempt.body.actionStatus).toBe("INCOMPLETE");
     expect(trackAction).toHaveBeenCalledTimes(1);
     expect(getAction).toHaveBeenCalledTimes(1);
 
     // Third call: getAction → CHALLENGE_SUCCEEDED → SUCCESS
-    const thirdAttempt = await request(app).post("/api/authenticate").send(authenticateRequest);
+    const thirdAttempt = await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send(authenticateRequest);
     expect(thirdAttempt.status).toBe(200);
     expect(thirdAttempt.body).toEqual({ actionStatus: "SUCCESS" });
     expect(getAction).toHaveBeenCalledTimes(2);
@@ -96,13 +108,16 @@ describe("Asgardeo/Authsignal adapter", () => {
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal: createAuthsignalClientMock({ trackAction })
+      resolveAuthsignalClient: () => createAuthsignalClientMock({ trackAction })
     });
 
-    const response = await request(app).post("/api/authenticate").send({
-      flowId: "flow-block",
-      event: { user: { id: "user-blocked" } }
-    });
+    const response = await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send({
+        flowId: "flow-block",
+        event: { user: { id: "user-blocked" } }
+      });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
@@ -112,32 +127,41 @@ describe("Asgardeo/Authsignal adapter", () => {
     });
   });
 
-  it("enforces bearer auth on authenticate endpoint when configured", async () => {
-    const config = baseConfig();
-    config.asgardeo.auth = { mode: "bearer", token: "top-secret" };
-
+  it("rejects requests without valid Basic Auth", async () => {
     const app = createApp({
-      config,
+      config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal: createAuthsignalClientMock()
+      resolveAuthsignalClient: () => createAuthsignalClientMock()
     });
 
-    const withoutToken = await request(app).post("/api/authenticate").send({
+    // No auth header
+    const noAuth = await request(app).post("/api/authenticate").send({
       flowId: "flow-auth",
       event: { user: { id: "user-auth" } }
     });
-    expect(withoutToken.status).toBe(401);
+    expect(noAuth.status).toBe(401);
 
-    const withToken = await request(app)
+    // Wrong password
+    const wrongPassword = await request(app)
       .post("/api/authenticate")
-      .set("authorization", "Bearer top-secret")
+      .set("authorization", "Basic " + Buffer.from("some-secret:wrong-password").toString("base64"))
       .send({
         flowId: "flow-auth",
         event: { user: { id: "user-auth" } }
       });
-    expect(withToken.status).toBe(200);
-    expect(withToken.body).toEqual({ actionStatus: "SUCCESS" });
+    expect(wrongPassword.status).toBe(401);
+
+    // Correct password
+    const correctAuth = await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send({
+        flowId: "flow-auth",
+        event: { user: { id: "user-auth" } }
+      });
+    expect(correctAuth.status).toBe(200);
+    expect(correctAuth.body).toEqual({ actionStatus: "SUCCESS" });
   });
 
   it("returns FAILED when getAction reports challenge failed on re-entry", async () => {
@@ -153,20 +177,57 @@ describe("Asgardeo/Authsignal adapter", () => {
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal
+      resolveAuthsignalClient: () => authsignal
     });
 
     const req = { flowId: "flow-fail", event: { user: { id: "user-fail" } } };
 
-    await request(app).post("/api/authenticate").send(req);
+    await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
 
-    const reentry = await request(app).post("/api/authenticate").send(req);
+    const reentry = await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
     expect(reentry.status).toBe(200);
     expect(reentry.body).toEqual({
       actionStatus: "FAILED",
       failureReason: "authsignal_challenge_failed",
       failureDescription: "Authentication challenge failed"
     });
+  });
+
+  it("extracts tenant from event.tenant.name and includes it in the resume URL", async () => {
+    const trackAction = vi.fn(async () => ({
+      state: "CHALLENGE_REQUIRED",
+      idempotencyKey: "action-id-tenant",
+      url: "https://challenge.example.com/session/tenant"
+    }));
+
+    const config = baseConfig();
+    config.asgardeo.resumeUrlTemplate = "https://api.asgardeo.io/t/{tenant}/commonauth?flowId={flowId}";
+
+    const store = new MemoryFlowStore(900);
+    const app = createApp({
+      config,
+      logger: pino({ enabled: false }),
+      store,
+      resolveAuthsignalClient: () => createAuthsignalClientMock({ trackAction })
+    });
+
+    await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send({
+        flowId: "flow-tenant",
+        event: {
+          user: { id: "user-tenant" },
+          tenant: { name: "acme-corp" },
+          organization: { id: "org-123", orgHandle: "acme-corp" }
+        }
+      });
+
+    const flow = await store.get("flow-tenant");
+    expect(flow).toBeDefined();
+    expect(flow!.tenantHint).toBe("acme-corp");
+    expect(flow!.resumeUrl).toContain("/t/acme-corp/commonauth");
+    expect(flow!.resumeUrl).toContain("flowId=flow-tenant");
   });
 
   it("returns INCOMPLETE when getAction call fails on re-entry", async () => {
@@ -182,15 +243,39 @@ describe("Asgardeo/Authsignal adapter", () => {
       config: baseConfig(),
       logger: pino({ enabled: false }),
       store: new MemoryFlowStore(900),
-      authsignal
+      resolveAuthsignalClient: () => authsignal
     });
 
     const req = { flowId: "flow-err", event: { user: { id: "user-err" } } };
 
-    await request(app).post("/api/authenticate").send(req);
+    await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
 
-    const reentry = await request(app).post("/api/authenticate").send(req);
+    const reentry = await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
     expect(reentry.status).toBe(200);
     expect(reentry.body.actionStatus).toBe("INCOMPLETE");
+  });
+
+  it("invokes the resolver with the Express request on each call", async () => {
+    const mockClient = createAuthsignalClientMock();
+    const resolver = vi.fn(() => mockClient);
+
+    const app = createApp({
+      config: baseConfig(),
+      logger: pino({ enabled: false }),
+      store: new MemoryFlowStore(900),
+      resolveAuthsignalClient: resolver
+    });
+
+    await request(app)
+      .post("/api/authenticate")
+      .set("authorization", BASIC_AUTH_HEADER)
+      .send({
+        flowId: "flow-resolver",
+        event: { user: { id: "user-1" } }
+      });
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver.mock.calls[0]).toHaveLength(1);
+    expect((resolver.mock.calls[0] as unknown[])[0]).toHaveProperty("headers");
   });
 });

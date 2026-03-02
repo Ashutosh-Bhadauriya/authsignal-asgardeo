@@ -45,9 +45,8 @@ export function createAsgardeoRequestAuth(config: AppConfig): RequestHandler {
         return;
       }
 
-      const username = decoded.slice(0, splitIndex);
       const password = decoded.slice(splitIndex + 1);
-      if (!safeStringEquals(username, auth.username) || !safeStringEquals(password, auth.password)) {
+      if (!safeStringEquals(password, auth.password)) {
         unauthorized(response);
         return;
       }

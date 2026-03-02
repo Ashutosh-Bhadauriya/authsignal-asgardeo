@@ -4,7 +4,7 @@ import type { Logger } from "pino";
 
 import type { AppConfig } from "./config.js";
 import { createAsgardeoRequestAuth } from "./auth/asgardeo-request-auth.js";
-import type { AuthsignalClient } from "./auth/authsignal-client.js";
+import type { AuthsignalClient, AuthsignalClientResolver } from "./auth/authsignal-client.js";
 import type { CompletedFlowRecord, FlowStore, PendingFlowRecord } from "./store/flow-store.js";
 import { asgardeoAuthRequestSchema, type AsgardeoAuthRequest, type AsgardeoAuthResponse } from "./types/asgardeo.js";
 import { buildResumeUrl, extractTenantHint, getClientIp, resolveUserId } from "./utils.js";
@@ -18,7 +18,7 @@ interface AppDependencies {
   config: AppConfig;
   logger: Logger;
   store: FlowStore;
-  authsignal: AuthsignalClient;
+  resolveAuthsignalClient: AuthsignalClientResolver;
 }
 
 function canRedirect(request: AsgardeoAuthRequest): boolean {
@@ -87,13 +87,14 @@ function toCompletedFlow(
   };
 }
 
-export function createApp({ config, logger, store, authsignal }: AppDependencies): express.Express {
+export function createApp({ config, logger, store, resolveAuthsignalClient }: AppDependencies): express.Express {
   const app = express();
   const authenticateAuthMiddleware = createAsgardeoRequestAuth(config);
 
   async function resolvePendingFlow(
     flow: PendingFlowRecord,
-    asgardeoRequest: AsgardeoAuthRequest
+    asgardeoRequest: AsgardeoAuthRequest,
+    authsignal: AuthsignalClient
   ): Promise<AsgardeoAuthResponse> {
     try {
       const actionResult = await authsignal.getAction(flow.userId, flow.action, flow.idempotencyKey);
@@ -171,12 +172,13 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
 
     const asgardeoRequest = parsedRequest.data;
     const flowId = asgardeoRequest.flowId;
+    const authsignal = resolveAuthsignalClient(request);
 
     try {
       const existingFlow = await store.get(flowId);
       if (existingFlow) {
         if (existingFlow.status === "PENDING") {
-          response.status(200).json(await resolvePendingFlow(existingFlow, asgardeoRequest));
+          response.status(200).json(await resolvePendingFlow(existingFlow, asgardeoRequest, authsignal));
           return;
         }
 
@@ -195,7 +197,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
         const lockRaceFlow = await store.get(flowId);
         if (lockRaceFlow) {
           if (lockRaceFlow.status === "PENDING") {
-            response.status(200).json(await resolvePendingFlow(lockRaceFlow, asgardeoRequest));
+            response.status(200).json(await resolvePendingFlow(lockRaceFlow, asgardeoRequest, authsignal));
           } else {
             response
               .status(200)
@@ -216,7 +218,7 @@ export function createApp({ config, logger, store, authsignal }: AppDependencies
         const doubleCheckFlow = await store.get(flowId);
         if (doubleCheckFlow) {
           if (doubleCheckFlow.status === "PENDING") {
-            response.status(200).json(await resolvePendingFlow(doubleCheckFlow, asgardeoRequest));
+            response.status(200).json(await resolvePendingFlow(doubleCheckFlow, asgardeoRequest, authsignal));
             return;
           }
           response

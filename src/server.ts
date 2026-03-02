@@ -2,7 +2,7 @@ import "dotenv/config";
 
 import { createServer } from "node:http";
 
-import { HttpAuthsignalClient } from "./auth/authsignal-client.js";
+import { createAuthsignalClientResolver } from "./auth/authsignal-client.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { buildLogger } from "./logger.js";
@@ -11,12 +11,12 @@ import { createFlowStore } from "./store/index.js";
 const config = loadConfig();
 const logger = buildLogger(config);
 const flowStore = createFlowStore(config, logger);
-const authsignalClient = new HttpAuthsignalClient(config.authsignal, logger);
+const resolveAuthsignalClient = createAuthsignalClientResolver(config.authsignal, logger);
 const app = createApp({
   config,
   logger,
   store: flowStore,
-  authsignal: authsignalClient
+  resolveAuthsignalClient
 });
 
 const server = createServer(app);

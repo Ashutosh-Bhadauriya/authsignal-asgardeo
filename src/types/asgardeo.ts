@@ -17,6 +17,14 @@ export const asgardeoAuthRequestSchema = z
             email: z.string().optional(),
             claims: z.record(z.unknown()).optional()
           })
+          .optional(),
+        tenant: z
+          .object({ name: z.string().optional() })
+          .passthrough()
+          .optional(),
+        organization: z
+          .object({ id: z.string().optional(), orgHandle: z.string().optional() })
+          .passthrough()
           .optional()
       })
       .passthrough()

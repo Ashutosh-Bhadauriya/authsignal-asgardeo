@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import type { Logger } from "pino";
 
 import type { AppConfig } from "../config.js";
@@ -26,13 +27,12 @@ export class HttpAuthsignalClient implements AuthsignalClient {
   private readonly serverApiAuthorizationHeader: string;
 
   constructor(
-    private readonly authsignalConfig: AppConfig["authsignal"],
+    apiUrl: string,
+    secret: string,
     private readonly logger: Logger
   ) {
-    this.baseUrl = authsignalConfig.apiUrl.endsWith("/")
-      ? authsignalConfig.apiUrl.slice(0, -1)
-      : authsignalConfig.apiUrl;
-    const encoded = Buffer.from(`${authsignalConfig.secret}:`, "utf-8").toString("base64");
+    this.baseUrl = apiUrl.endsWith("/") ? apiUrl.slice(0, -1) : apiUrl;
+    const encoded = Buffer.from(`${secret}:`, "utf-8").toString("base64");
     this.serverApiAuthorizationHeader = `Basic ${encoded}`;
   }
 
@@ -134,4 +134,42 @@ export class HttpAuthsignalClient implements AuthsignalClient {
     const base = 150;
     return base * 2 ** attempt;
   }
+}
+
+export type AuthsignalClientResolver = (req: Request) => AuthsignalClient;
+
+function extractBasicAuthUsername(req: Request): string | undefined {
+  const header = req.header("authorization");
+  if (!header?.startsWith("Basic ")) return undefined;
+
+  try {
+    const decoded = Buffer.from(header.slice("Basic ".length), "base64").toString("utf-8");
+    const splitIndex = decoded.indexOf(":");
+    if (splitIndex < 0) return undefined;
+    const username = decoded.slice(0, splitIndex).trim();
+    return username || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function createAuthsignalClientResolver(
+  config: AppConfig["authsignal"],
+  logger: Logger
+): AuthsignalClientResolver {
+  const clientCache = new Map<string, HttpAuthsignalClient>();
+
+  return (req: Request): AuthsignalClient => {
+    const secret = extractBasicAuthUsername(req);
+    if (!secret) {
+      throw new Error("Missing Authsignal secret: Asgardeo must send the API key as the Basic Auth username");
+    }
+
+    let client = clientCache.get(secret);
+    if (!client) {
+      client = new HttpAuthsignalClient(config.apiUrl, secret, logger);
+      clientCache.set(secret, client);
+    }
+    return client;
+  };
 }

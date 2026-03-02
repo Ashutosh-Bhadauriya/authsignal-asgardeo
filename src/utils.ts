@@ -2,23 +2,12 @@ import type { Request } from "express";
 
 import type { AsgardeoAuthRequest } from "./types/asgardeo.js";
 
-const TENANT_KEYS = ["tenant", "tenantDomain", "organization", "org", "organizationName"] as const;
-
 function maybeString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
-}
-
-function readRecordValue(record: unknown, key: string): string | undefined {
-  if (typeof record !== "object" || !record || Array.isArray(record)) {
-    return undefined;
-  }
-
-  const value = (record as Record<string, unknown>)[key];
-  return maybeString(value);
 }
 
 export function resolveUserId(request: AsgardeoAuthRequest): string | undefined {
@@ -37,26 +26,22 @@ export function resolveUserId(request: AsgardeoAuthRequest): string | undefined 
 }
 
 export function extractTenantHint(request: AsgardeoAuthRequest): string | undefined {
-  for (const key of TENANT_KEYS) {
-    const topLevel = readRecordValue(request, key);
-    if (topLevel) {
-      return topLevel;
-    }
+  // Prefer event.tenant.name (Asgardeo's actual payload structure)
+  const tenantName = maybeString(request.event?.tenant?.name);
+  if (tenantName) {
+    return tenantName;
   }
 
-  for (const key of TENANT_KEYS) {
-    const inEvent = readRecordValue(request.event, key);
-    if (inEvent) {
-      return inEvent;
-    }
+  // Fall back to event.organization.orgHandle or id
+  const org = request.event?.organization;
+  const orgHandle = maybeString(org?.orgHandle);
+  if (orgHandle) {
+    return orgHandle;
   }
 
-  const context = typeof request.event === "object" && request.event ? (request.event as Record<string, unknown>).context : undefined;
-  for (const key of TENANT_KEYS) {
-    const inContext = readRecordValue(context, key);
-    if (inContext) {
-      return inContext;
-    }
+  const orgId = maybeString(org?.id);
+  if (orgId) {
+    return orgId;
   }
 
   return undefined;

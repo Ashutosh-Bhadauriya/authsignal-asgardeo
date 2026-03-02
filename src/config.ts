@@ -59,7 +59,6 @@ const envSchema = z
     ASGARDEO_API_KEY_HEADER: z.string().min(1).default("x-asgardeo-api-key"),
     ASGARDEO_API_KEY_VALUE: optionalString,
     AUTHSIGNAL_API_URL: z.string().url().default("https://api.authsignal.com"),
-    AUTHSIGNAL_SECRET: z.string().min(1),
     STORE_DRIVER: z.enum(["memory", "redis"]).default("memory"),
     FLOW_TTL_SECONDS: intWithDefault(900).refine((value) => value >= 60, "FLOW_TTL_SECONDS must be >= 60"),
     REDIS_URL: optionalString
@@ -73,11 +72,11 @@ const envSchema = z
       });
     }
 
-    if (env.ASGARDEO_AUTH_MODE === "basic" && (!env.ASGARDEO_BASIC_USERNAME || !env.ASGARDEO_BASIC_PASSWORD)) {
+    if (env.ASGARDEO_AUTH_MODE === "basic" && !env.ASGARDEO_BASIC_PASSWORD) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["ASGARDEO_BASIC_USERNAME"],
-        message: "ASGARDEO_BASIC_USERNAME and ASGARDEO_BASIC_PASSWORD are required for basic auth"
+        path: ["ASGARDEO_BASIC_PASSWORD"],
+        message: "ASGARDEO_BASIC_PASSWORD is required for basic auth"
       });
     }
 
@@ -115,13 +114,12 @@ export interface AppConfig {
     resumeUrlTemplate: string;
     auth:
       | { mode: "none" }
-      | { mode: "basic"; username: string; password: string }
+      | { mode: "basic"; password: string }
       | { mode: "bearer"; token: string }
       | { mode: "api-key"; headerName: string; value: string };
   };
   authsignal: {
     apiUrl: string;
-    secret: string;
   };
   store: {
     driver: "memory" | "redis";
@@ -141,7 +139,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     case "basic":
       asgardeoAuth = {
         mode: "basic",
-        username: parsed.ASGARDEO_BASIC_USERNAME as string,
         password: parsed.ASGARDEO_BASIC_PASSWORD as string
       };
       break;
@@ -169,8 +166,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       auth: asgardeoAuth
     },
     authsignal: {
-      apiUrl: parsed.AUTHSIGNAL_API_URL,
-      secret: parsed.AUTHSIGNAL_SECRET
+      apiUrl: parsed.AUTHSIGNAL_API_URL
     },
     store: {
       driver: parsed.STORE_DRIVER,
