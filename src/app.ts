@@ -238,7 +238,11 @@ export function createApp({ config, logger, store, resolveAuthsignalClient }: Ap
         }
 
         const tenantHint = extractTenantHint(asgardeoRequest);
-        const resumeUrl = buildResumeUrl(config.asgardeo.resumeUrlTemplate, flowId, tenantHint);
+        if (!tenantHint) {
+          response.status(200).json(asgardeoError("MISSING_TENANT", "No tenant found in request"));
+          return;
+        }
+        const resumeUrl = buildResumeUrl(flowId, tenantHint);
 
         const ipAddress = getClientIp(request);
         const userAgent = request.header("user-agent");

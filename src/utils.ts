@@ -47,27 +47,8 @@ export function extractTenantHint(request: AsgardeoAuthRequest): string | undefi
   return undefined;
 }
 
-export function buildResumeUrl(
-  template: string,
-  flowId: string,
-  tenantHint?: string
-): string {
-  const replacements: Record<string, string> = {
-    "{flowId}": encodeURIComponent(flowId),
-    "{tenant}": tenantHint ? encodeURIComponent(tenantHint) : "",
-    "{organization}": tenantHint ? encodeURIComponent(tenantHint) : ""
-  };
-
-  let resolved = template;
-  for (const [placeholder, value] of Object.entries(replacements)) {
-    resolved = resolved.replaceAll(placeholder, value);
-  }
-
-  const url = new URL(resolved);
-  if (!url.searchParams.has("flowId")) {
-    url.searchParams.set("flowId", flowId);
-  }
-  return url.toString();
+export function buildResumeUrl(flowId: string, tenant: string): string {
+  return `https://api.asgardeo.io/t/${encodeURIComponent(tenant)}/commonauth?flowId=${encodeURIComponent(flowId)}`;
 }
 
 export function getClientIp(request: Request): string | undefined {

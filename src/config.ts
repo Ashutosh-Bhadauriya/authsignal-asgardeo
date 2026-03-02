@@ -51,7 +51,6 @@ const envSchema = z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),
     TRUST_PROXY: booleanWithDefault(true),
-    ASGARDEO_RESUME_URL_TEMPLATE: z.string().min(1),
     ASGARDEO_AUTH_MODE: z.enum(["none", "basic", "bearer", "api-key"]).default("none"),
     ASGARDEO_BASIC_USERNAME: optionalString,
     ASGARDEO_BASIC_PASSWORD: optionalString,
@@ -64,14 +63,6 @@ const envSchema = z
     REDIS_URL: optionalString
   })
   .superRefine((env, ctx) => {
-    if (!env.ASGARDEO_RESUME_URL_TEMPLATE.includes("{flowId}")) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["ASGARDEO_RESUME_URL_TEMPLATE"],
-        message: "ASGARDEO_RESUME_URL_TEMPLATE must include {flowId}"
-      });
-    }
-
     if (env.ASGARDEO_AUTH_MODE === "basic" && !env.ASGARDEO_BASIC_PASSWORD) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -111,7 +102,6 @@ export interface AppConfig {
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   trustProxy: boolean;
   asgardeo: {
-    resumeUrlTemplate: string;
     auth:
       | { mode: "none" }
       | { mode: "basic"; password: string }
@@ -162,7 +152,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel: parsed.LOG_LEVEL,
     trustProxy: parsed.TRUST_PROXY,
     asgardeo: {
-      resumeUrlTemplate: parsed.ASGARDEO_RESUME_URL_TEMPLATE,
       auth: asgardeoAuth
     },
     authsignal: {

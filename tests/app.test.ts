@@ -18,7 +18,6 @@ function baseConfig(): AppConfig {
     logLevel: "silent",
     trustProxy: true,
     asgardeo: {
-      resumeUrlTemplate: "https://asgardeo.example.com/logincontext?flowId={flowId}",
       auth: { mode: "basic", password: TEST_PASSWORD }
     },
     authsignal: {
@@ -66,7 +65,7 @@ describe("Asgardeo/Authsignal adapter", () => {
 
     const authenticateRequest = {
       flowId: "flow-123",
-      event: { user: { id: "user-1" } }
+      event: { user: { id: "user-1" }, tenant: { name: "test-tenant" } }
     };
 
     // First call: trackAction → CHALLENGE_REQUIRED → INCOMPLETE
@@ -116,7 +115,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       .set("authorization", BASIC_AUTH_HEADER)
       .send({
         flowId: "flow-block",
-        event: { user: { id: "user-blocked" } }
+        event: { user: { id: "user-blocked" }, tenant: { name: "test-tenant" } }
       });
 
     expect(response.status).toBe(200);
@@ -158,7 +157,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       .set("authorization", BASIC_AUTH_HEADER)
       .send({
         flowId: "flow-auth",
-        event: { user: { id: "user-auth" } }
+        event: { user: { id: "user-auth" }, tenant: { name: "test-tenant" } }
       });
     expect(correctAuth.status).toBe(200);
     expect(correctAuth.body).toEqual({ actionStatus: "SUCCESS" });
@@ -180,7 +179,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       resolveAuthsignalClient: () => authsignal
     });
 
-    const req = { flowId: "flow-fail", event: { user: { id: "user-fail" } } };
+    const req = { flowId: "flow-fail", event: { user: { id: "user-fail" }, tenant: { name: "test-tenant" } } };
 
     await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
 
@@ -200,12 +199,9 @@ describe("Asgardeo/Authsignal adapter", () => {
       url: "https://challenge.example.com/session/tenant"
     }));
 
-    const config = baseConfig();
-    config.asgardeo.resumeUrlTemplate = "https://api.asgardeo.io/t/{tenant}/commonauth?flowId={flowId}";
-
     const store = new MemoryFlowStore(900);
     const app = createApp({
-      config,
+      config: baseConfig(),
       logger: pino({ enabled: false }),
       store,
       resolveAuthsignalClient: () => createAuthsignalClientMock({ trackAction })
@@ -246,7 +242,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       resolveAuthsignalClient: () => authsignal
     });
 
-    const req = { flowId: "flow-err", event: { user: { id: "user-err" } } };
+    const req = { flowId: "flow-err", event: { user: { id: "user-err" }, tenant: { name: "test-tenant" } } };
 
     await request(app).post("/api/authenticate").set("authorization", BASIC_AUTH_HEADER).send(req);
 
@@ -271,7 +267,7 @@ describe("Asgardeo/Authsignal adapter", () => {
       .set("authorization", BASIC_AUTH_HEADER)
       .send({
         flowId: "flow-resolver",
-        event: { user: { id: "user-1" } }
+        event: { user: { id: "user-1" }, tenant: { name: "test-tenant" } }
       });
 
     expect(resolver).toHaveBeenCalledTimes(1);
